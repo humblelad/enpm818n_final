@@ -1,6 +1,8 @@
 # enpm818n_final
 
 Steps:
+
+(Deploy in us-east-1 )
 phasenat.yaml is the acutal fully completed cft for Phase 1 . (phase1.yaml is also same but it has public subnet as well as ssh setup)
 I recommend deploying phasenat.yaml and then using aws ui > eks client instance / docker instance > connect> connect via ssm for better security. 
 
