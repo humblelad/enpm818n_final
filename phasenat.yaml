@@ -1,0 +1,388 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OpenTelemetry Demo Deployment with private subnets, NAT gateway, Docker, EKS cluster and client
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t2.large
+    Description: EC2 instance type for Docker deployment and EKS client.
+
+  EKSNodeInstanceType:
+    Type: String
+    Default: t2.large
+    Description: Instance type for EKS worker nodes.
+
+  EKSDesiredCapacity:
+    Type: Number
+    Default: 2
+    Description: Desired number of EKS worker nodes.
+
+  ClusterName:
+    Type: String
+    Default: OpenTelemetryDemoEKS
+    Description: Name of the EKS Cluster
+
+Resources:
+  # VPC for the Infrastructure
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: OpenTelemetryDemoVPC
+
+  # Public Subnets for NAT/GW and optional public hosts
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PublicSubnet2
+
+  # Internet Gateway & public route
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: OpenTelemetryDemoIGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT Gateway for private subnets
+  NatEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: OpenTelemetryDemoNAT
+
+  # Private Subnets (no public IP)
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.11.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.12.0/24
+      MapPublicIpOnLaunch: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: PrivateSubnet2
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTable
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Group
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP, SSH, and EKS access
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: OpenTelemetryDemoSG
+
+  # IAM Role for SSM
+  SSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+      Policies:
+        - PolicyName: AllowDescribeEKSCluster
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                Resource: "*"
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref SSMRole
+
+  # EC2 Instance for Docker Deployment
+  DockerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      ImageId: ami-0b86aaed8ef90e45f
+      Tags:
+        - Key: Name
+          Value: DockerInstance
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 32
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          amazon-linux-extras install docker -y
+          service docker start
+          usermod -aG docker ec2-user
+          curl -L https://github.com/docker/compose/releases/latest/download/docker-compose-`uname -s`-`uname -m` -o /usr/local/bin/docker-compose
+          chmod +x /usr/local/bin/docker-compose
+          sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+          yum install git -y
+          git clone https://github.com/open-telemetry/opentelemetry-demo.git
+          cd opentelemetry-demo
+          docker-compose up --force-recreate --remove-orphans --detach
+
+  # EC2 Instance for EKS Client
+  EKSClientInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      SubnetId: !Ref PublicSubnet2
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      ImageId: ami-0b86aaed8ef90e45f
+      Tags:
+        - Key: Name
+          Value: EKSClientInstance
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 32
+            VolumeType: gp2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          yum update -y
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          ./aws/install
+          sudo ln -sf /usr/local/bin/aws /bin/aws
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x ./kubectl
+          mv ./kubectl /usr/local/bin/kubectl
+          sudo ln -s /usr/local/bin/kubectl /usr/bin/kubectl
+          curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz -C /tmp
+          mv /tmp/eksctl /usr/bin/eksctl
+          echo "Waiting for EKS cluster to be active..."
+          aws eks wait cluster-active --region ${AWS::Region} --name ${ClusterName}
+          aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}
+          sudo kubectl create --validate=false --namespace otel-demo -f https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/main/kubernetes/opentelemetry-demo.yaml
+
+  # IAM Roles for EKS
+  EKSClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+
+  EKSNodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+
+  EKSNodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EKSNodeRole
+
+  # EKS Cluster configured to use private subnets
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      ResourcesVpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        SecurityGroupIds:
+          - !Ref SecurityGroup
+        EndpointPublicAccess: false
+        EndpointPrivateAccess: true
+      RoleArn: !GetAtt EKSClusterRole.Arn
+      AccessConfig:
+        AuthenticationMode: API_AND_CONFIG_MAP
+        BootstrapClusterCreatorAdminPermissions: true
+
+  EC2AccessEntry:
+    Type: AWS::EKS::AccessEntry
+    DependsOn: EKSCluster
+    Properties:
+      ClusterName: !Ref ClusterName
+      PrincipalArn: !GetAtt SSMRole.Arn
+      AccessPolicies:
+        - PolicyArn: arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope:
+            Type: cluster
+
+  # EKS managed node group in private subnets
+  EKSNodeGroup:
+    Type: AWS::EKS::Nodegroup
+    Properties:
+      ClusterName: !Ref EKSCluster
+      NodeRole: !GetAtt EKSNodeRole.Arn
+      Subnets:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      InstanceTypes:
+        - !Ref EKSNodeInstanceType
+      ScalingConfig:
+        DesiredSize: !Ref EKSDesiredCapacity
+        MinSize: 1
+        MaxSize: 3
+
+Outputs:
+  DockerInstancePublicIP:
+    Description: Public IP of the Docker EC2 Instance
+    Value: !GetAtt DockerInstance.PublicIp
+
+  EKSClientInstancePublicIP:
+    Description: Public IP of the EKS Client EC2 Instance
+    Value: !GetAtt EKSClientInstance.PublicIp
+
+  EKSClusterName:
+    Description: Name of the EKS Cluster
+    Value: !Ref EKSCluster
+
+  EKSNodeGroupName:
+    Description: Name of the EKS Node Group
+    Value: !Ref EKSNodeGroup
