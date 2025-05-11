@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: alert-pod-restart-limit-exceeded
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+  - name: pod-restart-alerts
+    rules:
+    - alert: PodRestartLimitExceeded
+      expr: kube_pod_container_status_restarts_total > 2
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod {{ $labels.pod }} (namespace {{ $labels.namespace }}) has restarted more than 2 times."
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has restarted {{ $value }} times in the last hour. This could indicate an underlying issue."
