@@ -1,0 +1,60 @@
+name: Rollback Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Main CI/CD Pipeline"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  check-deployment:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    steps:
+      - name: Check deployment status
+        run: |
+          echo "Checking deployment status..."
+          # Add your deployment status check logic here
+
+  rollback:
+    needs: check-deployment
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Rollback deployment
+        run: |
+          # Rollback to previous version
+          kubectl rollout undo deployment/opentelemetry-demo
+          
+          # Wait for rollback to complete
+          kubectl rollout status deployment/opentelemetry-demo --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          # Add health check commands here
+          echo "Verifying rollback..."
+          # Add your health check commands here
+          curl -f http://localhost:8080/health || true  # Replace with your actual health check endpoint
+
+      - name: Notify rollback
+        if: always()
+        run: |
+          echo "Deployment failed and was rolled back to previous version"
+          # Add notification logic here (e.g., Slack, email)
+          # Example Slack notification:
+          # curl -X POST -H 'Content-type: application/json' --data '{"text":"Deployment failed and was rolled back"}' ${{ secrets.SLACK_WEBHOOK_URL }} 
