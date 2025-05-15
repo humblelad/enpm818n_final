@@ -1,0 +1,115 @@
+name: Cart CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  ECR_REPOSITORY: 147997148397.dkr.ecr.us-east-1.amazonaws.com/cart
+  IMAGE_NAME: cart
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    outputs:
+      ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          docker build -f src/cart/src/Dockerfile -t $ECR_REGISTRY/cart:latest .
+          docker push $ECR_REGISTRY/cart:latest
+
+      - name: Run cart service tests
+        run: |
+          cd src/cart
+          npm install
+          npm test
+
+  deploy:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Deploy to EKS
+        env:
+          ECR_REGISTRY: ${{ needs.build-and-test.outputs.ECR_REGISTRY }}
+        run: |
+          # IMPORTANT: Ensure your cart deployment manifest does not have a hardcoded image like /cart:latest or cart:latest
+          kubectl set image deployment/cart cart=$ECR_REGISTRY/cart:latest -n otel-demo
+          kubectl rollout status deployment/cart -n otel-demo --watch=false
+      - name: Verify cart deployment
+        run: |
+          echo "Verifying cart service deployment..."
+          kubectl wait --for=condition=available --timeout=300s deployment/cart -n otel-demo
+          echo "Cart service deployment verified successfully"
+
+  rollback:
+    needs: deploy
+    if: failure() && needs.deploy.result == 'failure'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Rollback cart service
+        run: |
+          echo "Rolling back cart service to previous version..."
+          kubectl rollout undo deployment/cart -n otel-demo
+          kubectl rollout status deployment/cart -n otel-demo --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          echo "Verifying cart service rollback..."
+          kubectl wait --for=condition=available --timeout=300s deployment/cart -n otel-demo
+          echo "Cart service rollback verified successfully"
+
+      - name: Notify rollback
+        if: always()
+        run: |
+          echo "Cart service deployment failed and was rolled back to version ${{ env.CURRENT_VERSION }}"
+          # Add notification logic here (e.g., Slack, email)
+          # Example Slack notification:
+          # curl -X POST -H 'Content-type: application/json' --data '{"text":"Cart service deployment failed and was rolled back"}' ${{ secrets.SLACK_WEBHOOK_URL }} 
