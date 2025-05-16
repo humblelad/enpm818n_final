@@ -261,13 +261,17 @@ Resources:
           aws eks wait cluster-active --region ${AWS::Region} --name ${ClusterName}
           aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName} > /var/log/update-kubeconfig.log 2>&1
           sudo helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+          sudo helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           sudo helm repo update
           sleep 60
           sudo helm install otel-demo open-telemetry/opentelemetry-demo --namespace otel-demo-helm --create-namespace
+          sudo helm install kps prometheus-community/kube-prometheus-stack --namespace monitoring --create-namespace
           echo "Helm deployment complete. Forwarding frontend-proxy service..."
           sudo kubectl wait --namespace otel-demo-helm --for=condition=ready pod -l app.kubernetes.io/name=frontend-proxy --timeout=300s
-          sleep 60
-          sudo nohup kubectl port-forward --address 0.0.0.0 service/frontend-proxy -n otel-demo-helm 8080:8080 > /var/log/kubectl-port-forward.log 2>&1 &
+          sudo kubectl wait --namespace otel-demo-helm --for=condition=containersready pod -l app.kubernetes.io/name=frontend-proxy --timeout=300s
+          sleep 120
+          sudo nohup kubectl port-forward --address 0.0.0.0 service/kps-kube-prometheus-stack-prometheus -n monitoring 9090:9090 &
+          sudo nohup kubectl port-forward --address 0.0.0.0 service/frontend-proxy -n otel-demo-helm 8080:8080 &
 
   # IAM Roles for EKS
   EKSClusterRole:
