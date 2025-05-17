@@ -287,6 +287,7 @@ Resources:
           echo "Waiting for EKS cluster to be active..."
           aws eks wait cluster-active --region ${AWS::Region} --name ${ClusterName}
           aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}
+          sleep 60
           sudo kubectl create --validate=false --namespace otel-demo -f https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/main/kubernetes/opentelemetry-demo.yaml
 
   # IAM Roles for EKS
