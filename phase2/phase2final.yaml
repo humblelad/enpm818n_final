@@ -288,8 +288,13 @@ Resources:
           echo "Waiting for EKS cluster to be active..."
           aws eks wait cluster-active --region ${AWS::Region} --name ${ClusterName}
           aws eks update-kubeconfig --region ${AWS::Region} --name ${ClusterName}
-          sudo kubectl create --validate=false --namespace otel-demo -f https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/main/kubernetes/opentelemetry-demo.yaml
-
+          curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+          sleep 30
+          helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+          helm repo update
+          kubectl create namespace otel-demo
+          helm install otel-demo open-telemetry/opentelemetry-demo --namespace otel-demo
+          
   # IAM Roles for EKS
   EKSClusterRole:
     Type: AWS::IAM::Role
